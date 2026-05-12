@@ -1,0 +1,16 @@
+services:
+  agent-gateway:
+    build: .
+    container_name: agent-gateway
+
+    env_file:
+      - .env
+
+    ports:
+      - "8000:8000"
+
+    volumes:
+      - ./workspace:/workspace
+      - ./logs:/logs
+
+    restart: unless-stopped
