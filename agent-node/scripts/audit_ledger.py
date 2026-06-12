@@ -69,6 +69,14 @@ def main() -> int:
         if totals.get(cat, 0.0) > cap:
             violations.append(
                 f"{cat} cumulative ${totals[cat]:.2f} exceeds cap ${cap:.2f}")
+
+    # Guardrail §0.0-1: program spend (hardware + cloud) crossing $9,000
+    # triggers escalation before the $10k hard cap is reached.
+    program = totals.get("hardware", 0.0) + totals.get("cloud-gpu", 0.0)
+    if program > 9_000.0:
+        violations.append(
+            f"ESCALATE (guardrail §0.0-1): program spend ${program:.2f} "
+            f"crossed the $9,000 escalation threshold")
     for cat, cap in MONTHLY_CAPS.items():
         if monthly.get(cat, 0.0) > cap:
             violations.append(

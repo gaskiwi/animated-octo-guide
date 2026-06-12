@@ -95,7 +95,17 @@ if not TASK:
     sys.exit(1)
 
 # ── Orchestrator prompts ──────────────────────────────────────────────────────
-PLANNER_SYSTEM = """You are the orchestrator of a multi-agent system. Decompose the user's task into subtasks that independent subagents will execute, maximizing parallelism: subtasks with no dependency between them run at the same time.
+# Checklist requirement: the orchestrator holds the master plan in context at
+# all times (cached via llm_client cache_control, so reads cost ~10%).
+MASTER_PLAN = ""
+try:
+    _mp = Path(__file__).parent / "docs" / "freesn_swarm_master_plan.md"
+    MASTER_PLAN = ("# MASTER PLAN (authoritative — guardrails §0.0 binding)\n\n"
+                   + _mp.read_text(encoding="utf-8").strip() + "\n\n---\n\n")
+except OSError:
+    log.warning("master plan doc not found — orchestrator runs without it")
+
+PLANNER_SYSTEM = MASTER_PLAN + """You are the orchestrator of a multi-agent system. Decompose the user's task into subtasks that independent subagents will execute, maximizing parallelism: subtasks with no dependency between them run at the same time. If the task relates to the master plan above, respect its phases, [DECISION] freezes, and guardrails when decomposing.
 
 Reply with ONLY a JSON object:
 {
@@ -120,7 +130,7 @@ Rules:
 - Each prompt must stand alone: a subagent sees only its prompt plus the
   outputs of its depends_on."""
 
-REPLAN_SYSTEM = """You are the orchestrator reviewing intermediate results of a multi-agent run. Decide if follow-up subtasks are needed (gaps, errors, verification). Be conservative — only add subtasks that clearly improve the final deliverable.
+REPLAN_SYSTEM = MASTER_PLAN + """You are the orchestrator reviewing intermediate results of a multi-agent run. Decide if follow-up subtasks are needed (gaps, errors, verification). Be conservative — only add subtasks that clearly improve the final deliverable.
 
 Reply with ONLY JSON: {"done": true} if nothing is needed, or
 {"done": false, "subtasks": [ ...same schema as planning, ids must be new... ]}"""
