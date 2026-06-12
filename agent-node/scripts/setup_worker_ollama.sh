@@ -7,6 +7,7 @@ W="${1:-100.104.250.80}"   # tailscale IP (stable); LAN IP changes with DHCP
 
 ssh -o BatchMode=yes -o ConnectTimeout=10 "pacers4ever@$W" 'bash -s' <<'EOF'
 set -e
+mkdir -p ~/ollama
 cd ~/ollama
 # 1. Finish/repair the binary install
 if [ ! -x bin/ollama ]; then
