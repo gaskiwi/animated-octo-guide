@@ -1,0 +1,13 @@
+name: ledger-audit
+goal: >
+  Weekly spend-ledger audit. Verifies the live ledger
+  (/workspace/spend_ledger.md) parses cleanly and that all budget caps hold:
+  hardware <= $10k cumulative, cloud GPU <= $400 cumulative and <= $50/entry,
+  LLM API <= $300 in the current month. Any violation escalates to Slack.
+verify:
+  command: python3 /app/scripts/audit_ledger.py /workspace/spend_ledger.md
+  timeout: 60
+runner: none
+trigger:
+  interval_minutes: 10080
+enabled: true
