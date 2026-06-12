@@ -111,14 +111,27 @@ def _complete_openrouter(system: str, user: str, tier: str, max_tokens: int) -> 
 
 
 def _complete_ollama(system: str, user: str, tier: str, max_tokens: int) -> str:
-    resp = requests.post(
-        f"{OLLAMA_URL}/api/generate",
-        json={"model": _LOCAL_MODEL, "prompt": f"{system}\n\n{user}",
-              "stream": False, "options": {"num_predict": max_tokens}},
-        timeout=600,
-    )
-    resp.raise_for_status()
-    return resp.json()["response"].strip()
+    """Local-tier inference. Primary OLLAMA_URL (e.g. the GPU worker), with
+    automatic failover to OLLAMA_FALLBACK_URL (kamrui's own Ollama) when the
+    primary is unreachable — the swarm must keep working if the worker is off."""
+    payload = {"model": _LOCAL_MODEL, "prompt": f"{system}\n\n{user}",
+               "stream": False, "options": {"num_predict": max_tokens}}
+    fallback = os.environ.get("OLLAMA_FALLBACK_URL", "http://localhost:11434")
+    urls = [OLLAMA_URL] + ([fallback] if fallback and fallback != OLLAMA_URL else [])
+    last_err = None
+    for url in urls:
+        try:
+            # (connect, read) — connect must fail fast so failover to the
+            # fallback URL is quick when the worker is asleep/offline.
+            resp = requests.post(f"{url}/api/generate", json=payload,
+                                 timeout=(5, 600))
+            resp.raise_for_status()
+            log.info("ollama[%s] served by %s", _LOCAL_MODEL, url)
+            return resp.json()["response"].strip()
+        except (requests.ConnectionError, requests.Timeout) as e:
+            log.warning("ollama at %s unreachable (%s) — trying next", url, type(e).__name__)
+            last_err = e
+    raise last_err
 
 
 def complete(system: str, user: str, tier: str = "fast",
