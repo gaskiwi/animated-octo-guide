@@ -8,3 +8,4 @@ logs/
 .openclaw/
 *.bak
 nohup.out
+secrets/

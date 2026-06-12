@@ -76,15 +76,16 @@ def _flag_value(name, default):
 MAX_PARALLEL = min(_flag_value("--max-agents", DEFAULT_PARALLEL), HARD_CAP_AGENTS)
 NO_REPLAN    = "--no-replan" in raw_args
 USE_LOCAL    = "--local" in raw_args
+NO_VERIFY    = "--no-verify" in raw_args   # test-gated by default
 SUB_TIER     = "local" if USE_LOCAL else "fast"
 
-TASK = re.sub(r"--max-agents[=\s]+\d+|--no-replan|--local|--dynamic", "",
+TASK = re.sub(r"--max-agents[=\s]+\d+|--no-replan|--no-verify|--local|--dynamic", "",
               " ".join(a for a in raw_args)).strip()
 
 _env_task = os.environ.get("OPENCLAW_TASK", "")
 if _env_task:
     cleaned = re.sub(r"^(\s*--[\w-]+(?:[=\s]+\S+)?\s*)+", "", _env_task).strip()
-    cleaned = re.sub(r"--max-agents[=\s]+\d+|--no-replan|--local|--dynamic", "",
+    cleaned = re.sub(r"--max-agents[=\s]+\d+|--no-replan|--no-verify|--local|--dynamic", "",
                      cleaned).strip()
     if cleaned:
         TASK = cleaned
@@ -294,6 +295,16 @@ def main():
                          tier="smart", max_tokens=4000)
     except Exception as e:
         final = f"(synthesis failed: {e})\n\nRaw outputs:\n{digest[:8000]}"
+
+    # Test-gated completion: independent verifier (fresh context, doer≠checker)
+    # reviews the deliverable before it is presented as done.
+    if not NO_VERIFY:
+        try:
+            from verification import gate, format_verdict
+            v_passed, v_verdict = gate(TASK, final)
+            final += format_verdict(v_passed, v_verdict)
+        except Exception as _v_e:
+            final += f"\n\n⚠️ _Verifier unavailable — output is UNVERIFIED: {_v_e}_"
 
     total = sum(durations.values())
     wall = max(durations.values()) if durations else 0

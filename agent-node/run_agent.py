@@ -41,14 +41,15 @@ FORCE_HAIKU     = "--haiku"       in raw_args.lower()
 FORCE_SONNET    = "--sonnet"      in raw_args.lower()
 USE_CLAUDE_CODE = "--claude-code" in raw_args.lower()
 UPLOAD_GITHUB = "--github" in raw_args.lower()
+NO_VERIFY     = "--no-verify" in raw_args.lower()   # test-gated by default
 
 # First token is the command type, rest is the task
 CMD_TYPE = sys.argv[1].lstrip("/").lower() if len(sys.argv) > 1 else "build"
-TASK = re.sub(r"--crewai|--github|--batch|--haiku|--sonnet|--claude-code", "", " ".join(sys.argv[2:]), flags=re.IGNORECASE).strip()
+TASK = re.sub(r"--crewai|--github|--batch|--haiku|--sonnet|--claude-code|--no-verify", "", " ".join(sys.argv[2:]), flags=re.IGNORECASE).strip()
 
 VALID_CMDS = {"build", "plan", "deploy", "research"}
 if CMD_TYPE not in VALID_CMDS:
-    TASK = re.sub(r"--crewai|--github|--batch|--haiku|--sonnet|--claude-code", "", raw_args, flags=re.IGNORECASE).strip()
+    TASK = re.sub(r"--crewai|--github|--batch|--haiku|--sonnet|--claude-code|--no-verify", "", raw_args, flags=re.IGNORECASE).strip()
     CMD_TYPE = "build"
 
 # ── SlackLogger setup ─────────────────────────────────────────────────────────
@@ -386,12 +387,24 @@ def run():
 
         gh_suffix = upload_github(TASK, result) if UPLOAD_GITHUB else ""
 
+        # Test-gated completion: independent verifier reviews before "done".
+        verify_note = ""
+        if not NO_VERIFY:
+            try:
+                from verification import gate, format_verdict
+                _passed, _verdict = gate(TASK, result)
+                verify_note = format_verdict(_passed, _verdict)
+            except Exception as _v_e:
+                verify_note = ("\n\n⚠️ _Verifier unavailable — output is "
+                               f"UNVERIFIED: {_v_e}_")
+
         post(
             f"{emoji} */{CMD_TYPE} result*\n"
             f"*Task:* `{TASK}`\n"
             f"*Model:* {model}\n\n"
             f"{result}"
             f"{gh_suffix}"
+            f"{verify_note}"
             f"{footer}"
         )
         # Store result in KB so future runs can reference it

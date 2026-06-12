@@ -10,6 +10,7 @@ services:
       - ./logs:/logs
       - ./loops:/app/loops
       - ./state:/app/state
+      - ./secrets:/app/secrets:ro
       - /home/pacers4ever/knowledge_base:/home/pacers4ever/knowledge_base
     restart: unless-stopped
 
@@ -25,5 +26,6 @@ services:
       - ./logs:/logs
       - ./loops:/app/loops
       - ./state:/app/state
+      - ./secrets:/app/secrets:ro
       - /home/pacers4ever/knowledge_base:/home/pacers4ever/knowledge_base
     restart: unless-stopped

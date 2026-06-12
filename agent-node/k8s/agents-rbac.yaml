@@ -1,0 +1,50 @@
+# Namespace-scoped access for the swarm (capability checklist §3):
+# agents get a ServiceAccount confined to the `agents` namespace —
+# jobs/pods/logs only. They cannot see nodes, other namespaces, or
+# cluster workloads. The admin kubeconfig never reaches an agent.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agents
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-runner
+  namespace: agents
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: agent-runner-token
+  namespace: agents
+  annotations:
+    kubernetes.io/service-account.name: agent-runner
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agent-runner-role
+  namespace: agents
+rules:
+- apiGroups: ["batch"]
+  resources: ["jobs", "jobs/status"]
+  verbs: ["create", "get", "list", "watch", "delete"]
+- apiGroups: [""]
+  resources: ["pods", "pods/log", "events", "configmaps"]
+  verbs: ["get", "list", "watch", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agent-runner-binding
+  namespace: agents
+subjects:
+- kind: ServiceAccount
+  name: agent-runner
+  namespace: agents
+roleRef:
+  kind: Role
+  name: agent-runner-role
+  apiGroup: rbac.authorization.k8s.io
