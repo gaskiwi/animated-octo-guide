@@ -1,0 +1,12 @@
+name: health-watch
+goal: Watchdog for core services (gateway, Claude Code proxy, Ollama).
+verify:
+  command: >
+    curl -sf --max-time 5 localhost:8000/health > /dev/null &&
+    curl -sf --max-time 5 localhost:18790/health > /dev/null &&
+    curl -sf --max-time 5 localhost:11434/api/tags > /dev/null
+  timeout: 30
+runner: none
+trigger:
+  interval_minutes: 15
+enabled: true

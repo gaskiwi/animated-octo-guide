@@ -1,0 +1,14 @@
+# Rename to fix-tests.yaml (and edit paths) to activate.
+name: fix-tests
+goal: |
+  Make the test suite pass in /workspace/myproject. Do not delete or skip
+  tests to make them pass — fix the underlying code.
+verify:
+  command: "cd /workspace/myproject && python3 -m pytest -q"
+  timeout: 600
+runner: claude-code
+budget:
+  max_iterations: 5
+  max_minutes: 90
+# manual-only (no trigger): start with `/loop run fix-tests`
+enabled: true

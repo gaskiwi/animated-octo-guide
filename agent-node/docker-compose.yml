@@ -2,15 +2,28 @@ services:
   agent-gateway:
     build: .
     container_name: agent-gateway
-
+    network_mode: host
     env_file:
       - .env
-
-    ports:
-      - "8000:8000"
-
     volumes:
       - ./workspace:/workspace
       - ./logs:/logs
+      - ./loops:/app/loops
+      - ./state:/app/state
+      - /home/pacers4ever/knowledge_base:/home/pacers4ever/knowledge_base
+    restart: unless-stopped
 
+  loop-daemon:
+    build: .
+    container_name: loop-daemon
+    command: python3 loop_daemon.py
+    network_mode: host
+    env_file:
+      - .env
+    volumes:
+      - ./workspace:/workspace
+      - ./logs:/logs
+      - ./loops:/app/loops
+      - ./state:/app/state
+      - /home/pacers4ever/knowledge_base:/home/pacers4ever/knowledge_base
     restart: unless-stopped
