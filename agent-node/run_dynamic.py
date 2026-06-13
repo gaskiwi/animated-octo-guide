@@ -186,6 +186,16 @@ def validate_plan(plan):
     subtasks = plan.get("subtasks", [])
     if not subtasks:
         raise ValueError("planner returned no subtasks")
+    # Drop malformed entries (e.g. replanner emitting subtasks without a
+    # prompt — observed 2026-06-13, killed two runs post-deliverable).
+    well_formed = [t for t in subtasks
+                   if isinstance(t, dict) and t.get("id") and t.get("prompt")]
+    if len(well_formed) != len(subtasks):
+        log.warning("dropped %d malformed subtask(s) lacking id/prompt",
+                    len(subtasks) - len(well_formed))
+    subtasks = well_formed
+    if not subtasks:
+        raise ValueError("no well-formed subtasks")
     ids = {t["id"] for t in subtasks}
     for t in subtasks:
         t["depends_on"] = [d for d in t.get("depends_on", []) if d in ids and d != t["id"]]
@@ -224,7 +234,10 @@ def main():
 
     # 1. PLAN
     try:
-        plan = complete_json(PLANNER_SYSTEM, f"TASK:\n{TASK}", tier="smart")
+        # 8k output budget: complex tasks produce large plan JSONs and 4k
+        # truncation makes the planner unparseable (observed 2026-06-13).
+        plan = complete_json(PLANNER_SYSTEM, f"TASK:\n{TASK}", tier="smart",
+                             max_tokens=8000)
         subtasks = validate_plan(plan)
     except Exception as e:
         slack.post(f":x: Orchestrator planning failed: `{e}`", thread_ts)
@@ -258,7 +271,13 @@ def main():
             futures = [pool.submit(run_subagent, t, dict(outputs), workdir)
                        for t in wave]
             for fut in cf.as_completed(futures):
-                tid, out, dur, err = fut.result()
+                try:
+                    tid, out, dur, err = fut.result()
+                except Exception as e:
+                    # One broken subagent must not kill the whole run —
+                    # synthesis still happens with whatever completed.
+                    log.error("subagent crashed: %s", e)
+                    continue
                 outputs[tid] = out
                 durations[tid] = dur
                 if err:

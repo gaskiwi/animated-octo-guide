@@ -24,6 +24,9 @@ LEDGER = sys.argv[1] if len(sys.argv) > 1 else "/workspace/spend_ledger.md"
 CUMULATIVE_CAPS = {"hardware": 10_000.00, "cloud-gpu": 400.00}
 PER_ENTRY_CAPS  = {"cloud-gpu": 50.00}
 MONTHLY_CAPS    = {"llm-api": 300.00}
+# Yoo's directive 2026-06: ALL compute (tokens + cloud + other APIs) ≤ $300 total.
+TOTAL_COMPUTE_CAP = 300.00
+COMPUTE_CATEGORIES = {"llm-api", "cloud-gpu", "api"}
 
 HEADER = ("# Spend Ledger (live)\n\n"
           "| Timestamp | Actor | Category | Amount | Description |\n"
@@ -69,6 +72,15 @@ def main() -> int:
         if totals.get(cat, 0.0) > cap:
             violations.append(
                 f"{cat} cumulative ${totals[cat]:.2f} exceeds cap ${cap:.2f}")
+
+    compute = sum(totals.get(c, 0.0) for c in COMPUTE_CATEGORIES)
+    if compute > TOTAL_COMPUTE_CAP:
+        violations.append(
+            f"total compute ${compute:.2f} exceeds Yoo's $"
+            f"{TOTAL_COMPUTE_CAP:.0f} all-in compute cap — halt API-heavy work")
+    elif compute > TOTAL_COMPUTE_CAP * 0.8:
+        print(f"WARNING: compute spend ${compute:.2f} is past 80% of the "
+              f"${TOTAL_COMPUTE_CAP:.0f} cap")
 
     # Guardrail §0.0-1: program spend (hardware + cloud) crossing $9,000
     # triggers escalation before the $10k hard cap is reached.

@@ -9,5 +9,5 @@ verify:
   timeout: 60
 runner: none
 trigger:
-  interval_minutes: 10080
+  interval_minutes: 1440
 enabled: true

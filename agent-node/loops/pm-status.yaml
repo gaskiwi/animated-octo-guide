@@ -1,0 +1,20 @@
+name: pm-status
+goal: >
+  PM/docs role (master plan §11): update /workspace/status/weekly_status.md with
+  (1) progress vs the master plan's current-phase exit criteria, (2) every
+  non-CLOSED entry on /workspace/HANDOFFS.md with its state and what is blocking,
+  (3) compute spend from /workspace/spend_ledger.md vs the $300 cap. Then post a
+  concise summary to Slack. Be factual; cite file paths; do not invent progress.
+verify:
+  command: >
+    find /workspace/status/weekly_status.md -mmin -2880 | grep -q . &&
+    python3 /app/scripts/audit_ledger.py /workspace/spend_ledger.md
+  timeout: 90
+runner: dynamic
+runner_flags: "--max-agents 2 --no-replan"
+budget:
+  max_iterations: 2
+  max_minutes: 30
+trigger:
+  interval_minutes: 10080
+enabled: true

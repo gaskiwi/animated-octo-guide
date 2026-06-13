@@ -35,8 +35,13 @@ def _clients():
 
 
 def submit_job(name: str, image: str, command: list[str], gpu: bool = False,
-               timeout: int = 3600, env: dict | None = None):
-    """Create a Job, wait for completion, return (succeeded, logs)."""
+               timeout: int = 3600, env: dict | None = None,
+               host_network: bool = False):
+    """Create a Job, wait for completion, return (succeeded, logs).
+
+    host_network=True runs the pod on the node's network (and node-level
+    DNS) — workaround for the inter-node pod-egress/CoreDNS issue observed
+    2026-06-13; use for jobs that must reach the internet (pip installs)."""
     batch, core, k = _clients()
     job_name = f"{name[:40]}-{uuid.uuid4().hex[:6]}".lower().replace("_", "-")
 
@@ -47,7 +52,9 @@ def submit_job(name: str, image: str, command: list[str], gpu: bool = False,
             limits={"nvidia.com/gpu": "1"} if gpu else None))
     pod_spec = k.V1PodSpec(
         restart_policy="Never", containers=[container],
-        runtime_class_name="nvidia" if gpu else None)
+        runtime_class_name="nvidia" if gpu else None,
+        host_network=host_network or None,
+        dns_policy="Default" if host_network else None)
     job = k.V1Job(
         metadata=k.V1ObjectMeta(name=job_name, namespace=NAMESPACE),
         spec=k.V1JobSpec(
