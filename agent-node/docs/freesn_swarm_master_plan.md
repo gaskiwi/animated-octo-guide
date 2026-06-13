@@ -125,32 +125,45 @@ This *is* one message-passing round of a GNN with GRU updates. Properties we get
 
 ### 2.3 Message Schemas (P1.2) — wire format, frozen at phase exit
 
-**Per-tick strut→node message (14 bytes + 16 payload = 30 B):**
+**Per-tick strut→node message (Layer 1 / IR; 14 bytes + 16 payload = 30 B):**
 `[u8 msg_type][u16 strut_id][u8 connector_id][u16 tick][u8 goal_version][u8 seq][u32 reserved/crc][i8 payload ×16]`
 
-**Per-tick node→struts broadcast (28 B):** same header, no connector field, i8 ×16 payload.
+**Per-tick node→struts broadcast (Layer 1 / IR; 28 B):** same header, no connector field, i8 ×16 payload. Note: with IR this is no longer a true RF broadcast — the node clocks the same payload out to each occupied position's IR link in the tick's TX window.
 
-**Goal diffusion packet (~300 B, sent on change or every 2 s):**
+**Goal diffusion packet (Layer 2 / ESP-NOW; ~300 B, sent on change or every 2 s):**
 `[u8 msg_type][u8 goal_version][u8 hop_count][u8 q̂ ×1 (quantized)][f16 g ×128][u32 hmac-truncated]`
 Modules re-broadcast on version increase; version monotonicity prevents stale-instruction loops; truncated HMAC (key provisioned at flash time) prevents trivial spoofed goals.
 
-**Bandwidth check:** at 20 Hz, a node with 12 struts handles 12×30 B in + 28 B out per tick ≈ 7.8 kB/s ≈ 62 kbps plus overhead — comfortably inside ESP-NOW's practical ~250 kbps shared budget for a local neighborhood, with margin for goal diffusion and telemetry.
+**Bandwidth check:** per-tick strut↔node messages now ride **Layer 1 (IR, §2.4)**, not the radio. Each connector IR link carries one 30 B message in + one 28 B broadcast out per tick at 20 Hz ≈ 1.2 kbps per link — trivial for UART-over-IR (which runs 9.6 kbps–1 Mbit). **Layer 2 (ESP-NOW)** now carries only goal packets (~300 B on change/every 2 s) + telemetry + safety broadcasts, a few kbps swarm-wide — no congestion concern even at the 72-module v1 scale.
 
-### 2.4 Physical Communication Channel — trade study and decision (P1.3)
+### 2.4 Communication Architecture — two layers (P1.3)
 
-| Option | Mechanism | Pros | Cons | Risk |
+`[DECISION]` The prototype uses **two distinct communication layers**, because the per-tick message-passing problem (physical adjacency matters) and the goal/telemetry problem (swarm-wide) are different problems and forcing both onto one radio was a weakness of the v1.0 plan.
+
+**Layer 1 — Connector-local link (per-tick strut↔node messages).** A short-range link at each docking interface, active only between physically mated connector and node. This makes physical topology *identical* to logical topology — no radio filtering, no inference, no spoofing across the room — and removes per-tick traffic from the shared radio entirely.
+
+Channel trade for Layer 1:
+
+| Option | Mechanism | Pros | Cons | Cost/pair |
 |---|---|---|---|---|
-| (a) Through-connection | Modulated near-field/contact at the magnetic interface | Topology = physical truth; enables power-through-strut later | Must be invented; rolling contact makes continuous electrical contact hard; EMI from motors | High |
-| (b) Local radio (ESP-NOW) + sensed topology | 2.4 GHz broadcast; physical attachment sensed directly (prototype: hall switch per docking position; funded v1: T-RO-style magnetometer array), and software filters radio traffic to physical neighbors | Off-the-shelf; decouples comms risk from connector risk; broadcast suits node→struts | Shared spectrum at scale; topology inference adds a sensing dependency | Low–Med |
-| (c) Optical (IR) at connector | IR LED/photodiode pairs at interface | Immune to RF congestion | Alignment across a rolling spherical contact; ambient light | Med–High |
+| **IR (chosen)** | IR LED + photodiode face-to-face at the dock | Cents per pair; Mbit-capable; directional by geometry; zero RF regulatory; dead-simple protocol (UART-over-IR) | Needs rough alignment (dock geometry provides it); ambient-light sensitive (shrouded by the dock recess) | ~$0.30 |
+| NFC (13.56 MHz coil pair) | Coil in connector face + docking insert | No alignment beyond "facing"; commodity chips handle protocol; robust | Chip + coil more $ and board area; lower throughput than IR | ~$2–4 |
+| NFMI (AS3933-class, LF) | Small coil, near-field magnetic | Self-limiting range = automatic isolation (1/r⁶); works through body | Less commodity; trickier to bring up | ~$3–5 |
+| Capacitive | Conductive pad pair across the joint | Mechanically trivial; no sliding contact | MHz analog PCB design; fussy | ~$0.50 |
 
-`[DECISION]` Ship the prototype on **(b)**: ESP-NOW for per-tick messages and goal diffusion. **Topology sensing is simplified by the discrete-docking design**: one hall-effect switch per docking position (26/node) detects occupancy directly; struts announce their ID + connector + position index over radio on latch, and the node cross-checks hall state against announcements. The T-RO-style magnetometer array and GCN localization are NOT built in the prototype — they return in funded v1 alongside the freeform connector. Software still enforces that per-tick messages are only *accepted* from physically attached neighbors. RF congestion at 20 modules is far below the original 72-module concern; keep TX power minimized and TDMA slot offsets anyway (they cost nothing and de-risk scaling demos).
+`[DECISION]` **Layer 1 = IR (UART-over-IR) at each connector**, with the discrete dock's recessed, self-centering geometry providing alignment and ambient-light shielding. One IR emitter+receiver pair per connector end (strut: 2 ends) and one pair per docking position is too many on the node — instead, `[DECISION]` the node places IR pairs only where struts actually land: since attachment is sensed by the hall switch (§2.5), put **one shared IR transceiver per node hemisphere region** routed to whichever position is occupied, OR (simpler for the prototype) **one IR pair co-located with each of the 26 hall switches** if board cost allows — resolve in P4.1 bench test by measuring whether a regional transceiver gets reliable line-of-sight to all positions it serves. NFC is the documented fallback if IR alignment/ambient performance fails bench testing (P4.7).
+
+**Layer 2 — Mesh radio (goal diffusion + telemetry + safety).** ESP-NOW (2.4 GHz) on the ESP32-S3, used only for: goal-vector diffusion (§2.3 packets), the e-stop/ARM/geofence broadcasts (§2.9), and telemetry to the base station. This traffic is low-rate and swarm-wide, which is exactly what broadcast radio is good at, and taking the 20 Hz per-tick load off it removes the congestion concern that drove the original §3.5 drop-rate worries.
+
+**Topology sensing** stays as the hall switch per docking position (§2.5): hall edge = "something docked here," IR handshake = "it's strut #N, connector #C, and here's the link." Hall + IR together give occupancy *and* identity with no magnetometer array.
+
+This split also derisks two master-plan items at once: per-tick comms no longer depend on RF behavior at scale (R5 shrinks), and it provides a clean migration path to the funded-v1 freeform connector — the IR pair (or NFC coil) moves onto the rolling connector face, and the *architecture* is unchanged. `[OPEN → P4.1]` Whether IR survives the rolling-contact geometry of the v1 freeform connector, or whether v1 should switch to NFMI/capacitive that tolerate motion across the surface — a v1 question, flagged now, not solved now.
 
 ### 2.5 Compute Architecture (P1.4)
 
 `[DECISION]` Both module classes use **ESP32-S3** (dual-core LX7 @ 240 MHz, vector instructions, 8 MB PSRAM variant, native ESP-NOW). Strut adds a **DRV8833-class dual motor driver** with hardware current limit (safety spec §1.2-2). Inference runtime: **TFLite Micro / esp-nn**, int8. Policy budget per module: ≤ 100 k parameters, ≤ 5 ms inference per tick (measured headroom target ≤ 50 % core utilization). If Phase 3 distillation cannot hit 100 k params at acceptable performance, fallback `[OPEN → P3.8]` is an upgrade to a Cortex-M55+Ethos-U55 part (e.g., Alif E series) — provision the PCB with a compatible footprint decision before Phase 4 layout.
 
-Node sensing (prototype): **26× hall-effect switches** (one per docking position, e.g., SI7201-class, ~$0.40 ea) read via GPIO expanders — replaces the 24-magnetometer array entirely for the prototype (cost −$70/node, firmware complexity −1 subsystem). Both classes: 6-axis IMU (ICM-42688), battery gauge (MAX17048).
+Node sensing (prototype): **26× hall-effect switches** (one per docking position, e.g., SI7201-class, ~$0.40 ea) read via GPIO expanders — replaces the 24-magnetometer array entirely (cost −$70/node, firmware complexity −1 subsystem). **Connector-local IR link (§2.4):** strut carries 2 IR transceiver pairs (one per connector end); node carries IR pairs per docking position (or per region — resolved in P4.1), driven by a spare UART or software-UART with an IR carrier-modulator. Both classes: 6-axis IMU (ICM-42688), battery gauge (MAX17048).
 
 ### 2.6 Power Architecture (P1.5)
 
@@ -201,7 +214,7 @@ Do **not** simulate magnetics. The discrete-docking connector changes the kinema
 
 ### 3.4 Module Assets & Sensor Models (P2.4)
 
-USD assets from Phase 1 CAD (masses/inertias exported, not guessed). Sensor models: IMU with bias+noise, gimbal angle feedback with backlash, hall-occupancy map abstracted as "per-position attached-strut-id with detection latency and a small miss probability" — we simulate the *output* of the sensing, not the magnetics. Communication simulated as the actual message schema (§2.3) with configurable per-link drop rate, latency jitter, and tick desynchronization (modules tick at 20 Hz ± drift).
+USD assets from Phase 1 CAD (masses/inertias exported, not guessed). Sensor models: IMU with bias+noise, gimbal angle feedback with backlash, hall-occupancy map abstracted as "per-position attached-strut-id with detection latency and a small miss probability" — we simulate the *output* of the sensing, not the magnetics. Communication simulated as the actual two-layer model (§2.4): **Layer 1 (IR)** per-connector links with their own drop/latency (low, since contact-range) gated on the attachment state, and **Layer 2 (radio)** for goal/telemetry with separate, higher drop rates. Tick desynchronization (20 Hz ± drift) modeled on both.
 
 ### 3.5 Domain Randomization Plan (P2.5)
 
@@ -213,7 +226,8 @@ USD assets from Phase 1 CAD (masses/inertias exported, not guessed). Sensor mode
 | Gimbal backlash | [0, 3]° | per-joint |
 | Motor torque scale | ×[0.8, 1.1] | per-module |
 | Actuation latency | [10, 60] ms | per-module |
-| Message drop | [0, 15] % | per-link |
+| IR link drop (Layer 1) | [0, 5] % | per-connector link |
+| Radio drop (Layer 2) | [0, 15] % | per-link |
 | Tick desync | [0, 25] ms | per-module |
 | Mass/inertia | ×[0.95, 1.1] | per-module |
 | IMU bias walk | per datasheet ×[1, 3] | |
@@ -304,7 +318,8 @@ Build and bring up the 20-module fleet (12 struts + 8 nodes) in two waves — fi
 - *Dock*: N52 magnet in the connector face mating to a steel insert (or opposing magnet) at each of the node's 26 positions; target F_pull(0) ≈ 35 N — bench-iterate magnet size against insert geometry.
 - *Release*: a small servo/cam lever that peels or tilts the magnet to break the circuit (never fight full pull force directly). This is the highest-iteration-risk part; build it standalone on day one with printed parts before any strut exists.
 - *Gimbal*: 2-DOF pan/tilt between connector base and strut body, two micro gearmotors or smart servos (torque sized to swing a 350 g strut cantilevered at 220 mm with 2× margin → roughly ≥ 0.8 N·m at the joint; verify with the actual mass spreadsheet).
-- *Alignment*: chamfered self-centering geometry at the dock so the ±10 mm/±20° capture envelope (§3.3-3) is mechanically real.
+- *Alignment*: chamfered self-centering geometry at the dock so the ±10 mm/±20° capture envelope (§3.3-3) is mechanically real, AND so the IR emitter/photodiode land in line-of-sight when seated.
+- *Comms (Layer 1)*: bench-resolve IR pair-per-position vs one-transceiver-per-region (§2.4) by measuring link reliability across all positions a regional transceiver would serve; if IR fails ambient/crosstalk tests, switch this interface to NFC coil pairs (documented fallback).
 Freeform rolling connectors (FreeSN-faithful) are explicitly NOT built now; they are funded-v1 work, and the papers remain the reference for that upgrade.
 **P4.2 — Strut body.** Tube chassis (aluminum or even CF arrow-shaft stock) housing battery, PCB, wiring to both connector gimbals; charge pads on midbody; mass budget ≤ 350 g enforced (running spreadsheet, weighed at every build).
 **P4.3 — Node.** Two-hemisphere **SLS nylon** shell (service bureau, e.g., JLC3DP/Craftcloud; FDM acceptable for first articles only) or machined aluminum if load testing demands it; 26 docking positions each carrying a captured steel insert (through-bolted or mechanically trapped per §2.7) and a hall-effect switch on the inner surface; internal carrier holding PCB, battery, charge pads. No antenna window needed for nylon; two polymer windows if aluminum is chosen. Pull-test every insert design ×20 before fleet build.
@@ -315,7 +330,7 @@ Freeform rolling connectors (FreeSN-faithful) are explicitly NOT built now; they
 
 ### 5.4 Firmware (P4.5)
 
-FreeRTOS on ESP-IDF. Task set: (1) safety/e-stop (highest prio, owns nSLEEP line), (2) 20 Hz tick scheduler (comm RX window → inference → actuation → TX window, with TDMA slot offset by module ID), (3) ESP-NOW stack + message schema codecs, (4) goal-diffusion/quorum module (engineered per §4.5), (5) TFLite Micro inference, (6) sensing drivers (IMU, encoders/servo feedback; node: hall-switch matrix scan with debounce + attach/detach event generation), (7) telemetry/OTA (esp_https_ota against base station; signed images). Watchdogs per P0.6.
+FreeRTOS on ESP-IDF. Task set: (1) safety/e-stop (highest prio, owns nSLEEP line), (2) 20 Hz tick scheduler (comm RX window → inference → actuation → TX window, with TDMA slot offset by module ID), (3) **Layer-1 IR link** (UART-over-IR codec, per-connector, gated on hall/attachment) + **Layer-2 ESP-NOW stack** + message schema codecs for both, (4) goal-diffusion/quorum module on Layer 2 (engineered per §4.5), (5) TFLite Micro inference, (6) sensing drivers (IMU, encoders/servo feedback; node: hall-switch matrix scan with debounce + attach/detach event generation), (7) telemetry/OTA (esp_https_ota against base station; signed images). Watchdogs per P0.6.
 
 ### 5.5 Bring-up Checklist (P4.6)
 
@@ -330,7 +345,8 @@ Bench rigs + scripted firmware modes measure, with N ≥ 10 samples each:
 - Actuation latency (command → motion onset), motor torque constants as-built
 - Hall-switch detection reliability per position ×100 cycles
 - Battery endurance under scripted duty cycles (validates §2.6 budgets)
-- RF: packet-loss vs distance/orientation at 20 modules (P4.8) → updates §3.5 drop ranges
+- IR link (Layer 1): bit-error/drop vs dock seating, vs worst-case ambient light (sunlit room, overhead LED), vs adjacent-link crosstalk → updates §3.5 IR drop range; **go/no-go vs NFC fallback decided here**
+- Radio (Layer 2): packet-loss vs distance/orientation at 20 modules (P4.8) → updates §3.5 radio drop range
 Each experiment outputs a PR editing `connector_surrogate.yaml` / DR ranges with data attached. **Phase 3's final training runs use post-calibration values** — schedule the calibration before the budgeted full training runs (§4.8), i.e., target calibration complete by month ~10.
 
 ### 5.7 Through-Connection Investigation (P4.10) — funded-v1 item, DO NOT EXECUTE NOW
@@ -440,6 +456,7 @@ Spares pool ≥ 10 %; wheel/pad wear inspection interval from the 500-cycle data
 | # | Risk | Likelihood | Impact | Mitigation | Trigger/Fallback |
 |---|---|---|---|---|---|
 | R1 | Magnetic dock + release mechanism unreliable (latch misses, peel servo wear) | Med | Critical (gates everything physical) | P4.1 built standalone in week 1; self-centering geometry; 500-cycle test gate before fleet build | If 6 weeks without ≥95 % latch reliability: enlarge capture chamfer, reduce positions 26→12, or add mechanical hook backup |
+| R1b | Connector-local IR link unreliable (ambient light, alignment, crosstalk) | Med | High (per-tick comms ride it) | Recessed shrouded dock geometry; bench-test under worst ambient in P4.1/P4.7; carrier-modulated IR to reject DC ambient | Switch Layer 1 to NFC coil pairs (≈+$2–3/link, documented fallback); architecture unchanged |
 | R2 | Sim surrogate misses a dominant physical effect | Med–High | High | Calibration loop is a scheduled deliverable, not best-effort; replay validation (P5.1) before policy deployment | Repeated transfer failure → add MJX cross-check sim; expand DR |
 | R3 | MARL fails to reach C5/C6 quality | Med | High | GNN structure, curriculum, scripted baselines proving learnability; 30 % compute contingency | Fall back to hierarchical control: learned low-level skills + scripted/planned reconfiguration sequencer |
 | R4 | Distilled policy won't fit/meet timing on ESP32-S3 | Med | Med | §4.7 acceptance tested on devkit before Rev-B PCB freeze | Pre-planned MCU upgrade path (P1.4) |
@@ -473,7 +490,7 @@ Agents cannot perform physical work; every hardware task in Phase 4–5 bottoms 
 | Connector dev (magnets, servos, printed iterations ×3) | $700 | Week-1 standalone build; highest iteration risk |
 | First articles: 2 struts + 2 nodes (devkit Rev A) | $900 | Gates everything below |
 | Rev-B custom PCBs (strut + node, fab + econo assembly) | $1,100 | Only after Rev-A passes C1–C2 hardware |
-| Fleet electronics (ESP32-S3, drivers, sensors, halls ×fleet) | $1,300 | Ordered only after first-article gate |
+| Fleet electronics (ESP32-S3, drivers, sensors, halls, IR pairs ×fleet) | $1,350 | Ordered only after first-article gate; IR adds ~$0.30/link, NFC fallback ~$2–4/link if triggered |
 | Fleet mechanical (SLS shells, tubes, inserts, gimbals, motors) | $2,200 | Largest single category; quotes before order |
 | Batteries + protection + bench charger | $450 | |
 | Bench rigs (pull-force, cycle tester, jigs) | $500 | Mostly printed + a luggage scale + cheap load cell |
@@ -488,6 +505,9 @@ Deferred to funded v1 (do not spend now): freeform connectors, magnetometer arra
 
 *(Append dated entries here. Each note: what changed, why, which `[DECISION]`/exit criteria are affected. Only the human principal may approve entries.)*
 
+**CN-002 — 2026-06-12 — Two-layer communication architecture (approved: Yoo).**
+Per-tick strut↔node messaging moved off the shared ESP-NOW radio onto a **connector-local link (Layer 1)**, with ESP-NOW retained only for goal diffusion, telemetry, and safety broadcasts (**Layer 2**). `[DECISION]` Layer 1 = IR (UART-over-IR) at each discrete dock, using the recessed self-centering dock geometry for alignment and ambient shielding; NFC coil pairs are the documented fallback (risk R1b) if IR fails ambient/alignment/crosstalk bench tests (P4.1/P4.7). Affected: §2.3 (schema labels + bandwidth), §2.4 (rewritten), §2.5 (IR front end on both boards), §3.4 + §3.5 (sim models both layers; IR and radio drop rates split), §5.2/§5.4/§5.6 (P4.1 IR placement bench test, firmware Layer-1 task, calibration IR characterization + NFC go/no-go), risk register (+R1b). Rationale: the connector-comms problem is "pass a signal across a mated joint," not "broadcast over distance" — a contact-range link makes physical topology identical to logical topology (no radio filtering/spoofing), removes 20 Hz load from the radio (shrinks R5 and the scale-congestion concern), and migrates cleanly to the funded-v1 freeform connector. Open item flagged for v1: whether IR survives rolling-contact geometry or v1 should adopt NFMI/capacitive.
+
 **CN-001 — 2026-06-11 — v1.0 → v2.0 Prototype-First Revision (approved: Yoo).**
 Scope rebaselined from a $245–490k production program to a ≤$10k, 20-module funding prototype. Changes: (a) added binding agent-execution guardrails (§0.0); (b) P0.2 scale → 12 struts + 8 nodes, 220 mm/90 mm envelope; (c) connector redesigned from FreeSN freeform rolling to 26-position discrete magnetic dock + 2-DOF gimbal, pivot-gait kinematics — policy action space remains continuous, attachment quantized by firmware/surrogate snap (§2.2, §3.3, §5.2); (d) node shells → SLS nylon/aluminum with captured steel inserts; magnetometer array replaced by per-position hall switches; (e) training → local-first on RTX 4060, cloud spot capped at $400; C7 scale-generalization deferred; (f) electronics Rev A devkit-based; (g) Phases 6–7 fenced as post-funding outline; new Phase 6P (demo hardening + funding package) added; (h) budget §12 rewritten to the $10k cap with first-article gating. Rationale: available capital is $10k; the funding milestone is a reliable 20-module instruction-conditioned demo, and the intelligence stack (GNN policies, MARL pipeline, NLP front end) is preserved unchanged so funded v1 reuses it directly.
 
@@ -500,6 +520,8 @@ Scope rebaselined from a $245–490k production program to a ≤$10k, 20-module 
 | Swarm size (prototype) | 12 struts / 8 nodes (20 total) | P0.2 |
 | Strut length / node Ø | 220 mm / 90 mm | P0.2 |
 | Docking positions per node | 26 (truncated-icosahedron grid) | §0.1 / §5.2 |
+| Comm Layer 1 (per-tick) | IR / UART-over-IR at dock | §2.4 |
+| Comm Layer 2 (goal/telemetry/safety) | ESP-NOW 2.4 GHz | §2.4 |
 | Module mass caps | strut ≤ 350 g / node ≤ 350 g | P0.2 |
 | Tick rate | 20 Hz | P0.4 |
 | Goal vector | 128-d f16 | §2.2 |
